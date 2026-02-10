@@ -38,20 +38,14 @@ Free to use for any purpose.
 #define AVG_SAMPLE_COUNT 25
 #define CALIBRATION_SAMPLES 5
 
+// Print string function pointer for scale_tare_zero() messages
+typedef void (*print_string_t)(const char *str);
+
 // Public API functions
-extern int32_t adc_read_raw();
-extern int32_t adc_read_averaged(int32_t sample_count);
-extern int32_t adc_read_filtered();
-extern int32_t adc_read_with_offset();
-extern int32_t scale_get_weight();
-extern void scale_set_gain(uint16_t gain);
-extern uint16_t scale_get_gain();
-extern void scale_set_factor(int32_t factor);
-extern int32_t scale_get_factor();
-extern void scale_set_zero_offset(int32_t offset);
-extern int32_t scale_get_zero_offset();
-extern void scale_tare_zero();
 extern void scale_init_hardware();
-extern int32_t adc_read_calibration();
+extern int32_t scale_get_weight();
+extern void scale_set_factor(int32_t factor);
+extern void scale_tare_zero(print_string_t __print_string, const char *message, uint8_t first_call);
+extern int32_t adc_read_calibration(print_string_t __print_string, const char* message);
 
 #endif

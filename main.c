@@ -123,7 +123,7 @@ const uint8_t char_segments[] = {
 #define BUZZER_ON	PORTC &= ~(1 << buzzer)
 #define BUZZER_OFF	PORTC |= (1 << buzzer)
 
-inline uint8_t is_tare_sw_pressed()
+static inline uint8_t is_tare_sw_pressed()
 {
     uint8_t status = sw_ctrl_port & (1 << sw0);
     if (status)
@@ -136,7 +136,22 @@ inline uint8_t is_tare_sw_pressed()
     return 0;
 }
 
-inline uint8_t is_mode_sw_pressed()
+static inline uint8_t is_tare_sw_pressed_nowait()
+{
+    uint8_t status = sw_ctrl_port & (1 << sw0);
+    if (status)
+    {
+        BUZZER_ON;
+        // Do not wait for button release, return after 100 checks
+        //while ((sw_ctrl_port & (1 << sw0)) != 0);
+        for (volatile uint16_t i = 0; i < 100 && (sw_ctrl_port & (1 << sw0)); i++);
+        BUZZER_OFF;
+        return 1;
+    }
+    return 0;
+}
+
+static inline uint8_t is_mode_sw_pressed()
 {
 	uint8_t status = sw_ctrl_port & (1 << sw1);
 	if (status)
@@ -149,13 +164,13 @@ inline uint8_t is_mode_sw_pressed()
 	return 0;
 }
 
-inline void print_digit(uint8_t digit, uint8_t is_dp)
+static inline void print_digit(uint8_t digit, uint8_t is_dp)
 {
     if (digit > 9) return; // out of range
     digit_ctrl_port = is_dp ? (char_segments[digit] & 0b11011111) : char_segments[digit];
 }
 
-void print_weight(int32_t w)
+static void print_weight(int32_t w)
 {
     if (w < 0) // print the - sign
     {
@@ -177,23 +192,23 @@ void print_weight(int32_t w)
     }
 }
 
-void print_zero_cnt(void)
+static void print_screensaver(void)
 {
 	static volatile uint8_t i = 0;
 	static volatile uint32_t cnt = 0;
-	
+
 	if (cnt++ == 100)
 	{
 		i = (i == 5 ? 0 : (i+1));
 		cnt = 0;
 	}
-	
+
 	disp_ctrl_port = 0b00111111 & (~(1 << i));
 	digit_ctrl_port = 0b01111111;
 	_delay_us(400);
 }
 
-uint8_t get_char_segment(char ch) {
+static uint8_t get_char_segment(char ch) {
     if (ch >= '0' && ch <= '9') {
         return char_segments[ch - '0'];
     }
@@ -209,7 +224,7 @@ uint8_t get_char_segment(char ch) {
     return 0xFF; // unsupported character
 }
 
-void print_string(const char* str)
+static void print_string(const char* str)
 {
     uint8_t c[6] = {0};
     int i;
@@ -226,7 +241,7 @@ void print_string(const char* str)
     }
 }
 
-void adc_init(void)
+static void adc_init(void)
 {
 	DDRA = (1 << PA2);
 	ADCSRA = 0x87;			/* Enable ADC, fr/128  */
@@ -234,14 +249,14 @@ void adc_init(void)
     _delay_ms(5);
 }
 
-uint32_t adc_read(uint8_t channel)
-{	
+static uint32_t adc_read(uint8_t channel)
+{
 	ADMUX = ADMUX|(channel & 0x0f);	/* Set input channel to read */
 
 	ADCSRA |= (1<<ADSC);		/* Start conversion */
 	while((ADCSRA&(1<<ADIF))==0);	/* Monitor end of conversion interrupt */
-	
-	_delay_us(4);				
+
+	_delay_us(4);
 	return (ADCL + (ADCH << 8));
 }
 
@@ -256,7 +271,7 @@ uint32_t read_battery_voltage_mv(void)
 }
 #endif
 
-void init(void)
+static void init(void)
 {
     // Disable JTAG
     MCUCSR |= (1 << JTD);
@@ -265,7 +280,7 @@ void init(void)
     DDRB = 0b00111111;
     DDRD = 0b11111111;
     DDRC = 0b11111100;
-	
+
     scale_init_hardware();
     adc_init();
 	BUZZER_OFF;
@@ -275,7 +290,7 @@ int main(void)
 {
     init();
     _delay_us(800);
-	
+
     // Load calibration scale from EEPROM
     // RATIOMETRIC DESIGN: The HX711 uses the same reference voltage for both
     // the load cell excitation and the ADC reference. This ratiometric connection
@@ -286,10 +301,18 @@ int main(void)
     int32_t scale = eeprom_read_dword ((uint32_t *) 0);
     scale_set_factor(scale);
 	_delay_us(200);
-	
+
     // Initial tare (zero) to establish baseline
-	scale_tare_zero();
-	
+	scale_tare_zero(print_string, "TRISHA", 1);
+    for (int i = 0; i < 100; i++)
+    {
+        print_string("TRISHA");
+    }
+    for (int i = 0; i < 150; i++)
+    {
+        print_string("BAKERY");
+    }
+
     // Calibration mode - entered by holding mode switch at startup
 	if (is_mode_sw_pressed())
 	{
@@ -308,7 +331,7 @@ int main(void)
 			print_string("1000 G");
 			if (is_tare_sw_pressed()) break;
 		}
-		scale = adc_read_calibration();
+		scale = adc_read_calibration(print_string, "-read-");
 		scale_set_factor(scale);
 		eeprom_write_dword ((uint32_t *) 0, scale);
 		for (;;)
@@ -317,15 +340,17 @@ int main(void)
 			if (is_tare_sw_pressed()) break;
 		}
 	}
-	
-	// All signal processing is now handled in hx711_finalread() and hx711_getweight()
-	int32_t weight = 0;
-	volatile int32_t zero_cnt = 0;
+
+	volatile int16_t zero_cnt = 0;
+    volatile int16_t one_cnt = 0;
+    volatile int32_t abs_prev_weight = 0;
+    volatile int32_t weight = 0;
+    volatile uint8_t is_downward_transition = 0;
 
     for (;;)
     {
+#if 0
 		// Battery monitoring
-		#if 0
         uint32_t vbat = adc_read(BAT_ADC_CHANNEL);
         if (vbat < 451)
         {
@@ -334,36 +359,68 @@ int main(void)
                 print_string("LO BAT");
                 _delay_ms(1);
             }
-			
+
             continue; // skip weighing until voltage OK
         }
 		else
 		{
 			BUZZER_OFF;
 		}
-		#endif
+#endif
 
         // Tare button handling
-        if (is_tare_sw_pressed())
+        if (is_tare_sw_pressed_nowait())
         {
-            scale_tare_zero();  // This now resets all filter states internally
+            scale_tare_zero(NULL, NULL, 0);  // This now resets all filter states internally
         }
-		
+
 		// Read weight with all signal processing applied in HX711 library
 		// (moving average, weight change detection, settling compensation, flicker reduction)
 		weight = scale_get_weight();
-		
+
 		// Zero detection for screensaver
 		if (weight == 0)
 			zero_cnt++;
 		else
 			zero_cnt = 0;
-		
-		// Display logic
+
+        /**
+         * Due to hysteresis, sometimes the weight simply stays at 1 or -1 when near zero.
+         * Count these occurrences to decide when to trigger scale_tare_zero.
+         * One more thing to consider, the weight stays at 1 or -1 when the load is removed,
+         *  but the scale hasn't fully settled back to zero yet.
+         * In this case, we want to allow some time for it to settle before we reset the filter states.
+         * For this we need to detect the downward transition from a non-zero weight to 1 or -1,
+         *  and then start counting how long it stays there.
+         * If it stays at 1 or -1 for a certain number of consecutive readings (e.g. 50),
+         *  we can assume it's just noise around zero and reset the filter states to re-center around zero.
+         * This way, we can handle both cases: when the load is removed and the scale is settling back to zero,
+         *  and when the weight is just fluctuating around zero due to noise or small vibrations.
+         */
+        int32_t abs_weight = (weight < 0) ? -weight : weight;
+        int32_t weight_diff = abs_weight - abs_prev_weight;
+        if (weight_diff > 0)
+            is_downward_transition = 0;
+        else if (weight_diff < 0)
+            is_downward_transition = 1;
+
+        if (abs_weight == 1 && is_downward_transition)
+            one_cnt++;
+        else
+            one_cnt = 0;
+
+        if (one_cnt >= 50) // If we see 50 consecutive readings of 1 or -1, it's likely just noise around zero
+        {
+            one_cnt = 0;
+            scale_tare_zero(NULL, NULL, 0); // Reset filter states to re-center around zero
+        }
+        abs_prev_weight = abs_weight;
+
+        // Display logic
 		if (zero_cnt >= 700)
 		{
 			zero_cnt--;
-			print_zero_cnt();
+			print_screensaver();
 		}
 		else
 		{
