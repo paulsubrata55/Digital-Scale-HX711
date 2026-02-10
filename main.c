@@ -118,6 +118,7 @@ const uint8_t char_segments[] = {
     // symbols
     0b11111111,  // invalid char ? all off
     0b11111111,  // space
+    0b01111111, // - sign
 };
 
 #define BUZZER_ON	PORTC &= ~(1 << buzzer)
@@ -221,6 +222,10 @@ static uint8_t get_char_segment(char ch) {
     else if (ch == ' ') {
         return 0xFF; // all off
     }
+    else if (ch == '-') {
+        return 0b01111111; // - sign
+    }
+
     return 0xFF; // unsupported character
 }
 
@@ -243,9 +248,10 @@ static void print_string(const char* str)
 
 static void adc_init(void)
 {
-	DDRA = (1 << PA2);
+	DDRA &= ~(1 << PA0);	/* PA0 as input for ADC */
+	PORTA &= ~(1 << PA0);	/* Disable pull-up on PA0 */
 	ADCSRA = 0x87;			/* Enable ADC, fr/128  */
-	ADMUX = 0x40;
+	ADMUX = 0x40;			/* AVCC ref, channel 0 (PA0) */
     _delay_ms(5);
 }
 
@@ -301,16 +307,12 @@ int main(void)
     int32_t scale = eeprom_read_dword ((uint32_t *) 0);
     scale_set_factor(scale);
 	_delay_us(200);
-
+	
     // Initial tare (zero) to establish baseline
-	scale_tare_zero(print_string, "TRISHA", 1);
+	scale_tare_zero(print_string, "------", 1);
     for (int i = 0; i < 100; i++)
     {
-        print_string("TRISHA");
-    }
-    for (int i = 0; i < 150; i++)
-    {
-        print_string("BAKERY");
+        print_string(" INDIA");
     }
 
     // Calibration mode - entered by holding mode switch at startup
